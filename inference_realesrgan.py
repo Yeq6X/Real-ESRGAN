@@ -7,6 +7,7 @@ from basicsr.utils.download_util import load_file_from_url
 
 from realesrgan import RealESRGANer
 from realesrgan.archs.srvgg_arch import SRVGGNetCompact
+from tqdm import tqdm
 
 
 def main():
@@ -130,36 +131,55 @@ def main():
     else:
         paths = sorted(glob.glob(os.path.join(args.input, '*')))
 
-    for idx, path in enumerate(paths):
-        imgname, extension = os.path.splitext(os.path.basename(path))
-        print('Testing', idx, imgname)
+    # tqdmを使用してプログレスバーを表示
+    with tqdm(paths, desc="Processing files") as pbar:
+        for path in pbar:
+            imgname, extension = os.path.splitext(os.path.basename(path))
+            if extension.lower() not in ['.png', '.jpg', '.jpeg', '.bmp']:
+                continue
 
-        img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
-        if len(img.shape) == 3 and img.shape[2] == 4:
-            img_mode = 'RGBA'
-        else:
-            img_mode = None
+            # プログレスバーの横に現在のファイル名を表示
+            pbar.set_postfix(file=imgname)
 
-        try:
-            if args.face_enhance:
-                _, _, output = face_enhancer.enhance(img, has_aligned=False, only_center_face=False, paste_back=True)
+            img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+            if len(img.shape) == 3 and img.shape[2] == 4:
+                img_mode = 'RGBA'
+            elif len(img.shape) == 2:
+                # gray image to RGB
+                img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
             else:
-                output, _ = upsampler.enhance(img, outscale=args.outscale)
-        except RuntimeError as error:
-            print('Error', error)
-            print('If you encounter CUDA out of memory, try to set --tile with a smaller number.')
-        else:
-            if args.ext == 'auto':
-                extension = extension[1:]
+                img_mode = None
+
+            try:
+                if args.face_enhance:
+                    _, _, output = face_enhancer.enhance(img, has_aligned=False, only_center_face=False, paste_back=True)
+                else:
+                    img_w, img_h = img.shape[1], img.shape[0]
+                    output = None
+                    # if min(img_w, img_h) < 1024:
+                    output, _ = upsampler.enhance(img, outscale=1025 / min(img_w, img_h))
+                    output = output[0:1024, 0:1024, :]
+                    # 念のため
+                    if output.shape[0] < 1024 or output.shape[1] < 1024:
+                        output = cv2.resize(output, (1024, 1024), interpolation=cv2.INTER_CUBIC)
+                        print(f"Warning: {imgname} is smaller than 1024x1024, resize to 1024x1024.")
+                    # else:
+                    #     output = cv2.resize(img, (1024, 1024), interpolation=cv2.INTER_CUBIC)
+
+            except RuntimeError as error:
+                pbar.set_postfix(file=imgname, error="CUDA out of memory")
             else:
-                extension = args.ext
-            if img_mode == 'RGBA':  # RGBA images should be saved in png format
-                extension = 'png'
-            if args.suffix == '':
-                save_path = os.path.join(args.output, f'{imgname}.{extension}')
-            else:
-                save_path = os.path.join(args.output, f'{imgname}_{args.suffix}.{extension}')
-            cv2.imwrite(save_path, output)
+                if args.ext == 'auto':
+                    extension = extension[1:]
+                else:
+                    extension = args.ext
+                if img_mode == 'RGBA':  # RGBA images should be saved in png format
+                    extension = 'png'
+                if args.suffix == '':
+                    save_path = os.path.join(args.output, f'{imgname}.{extension}')
+                else:
+                    save_path = os.path.join(args.output, f'{imgname}_{args.suffix}.{extension}')
+                cv2.imwrite(save_path, output)
 
 
 if __name__ == '__main__':
